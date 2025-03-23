@@ -34,7 +34,7 @@ This repository contains the implementation of our paper: **"Learning Interpreta
    ```
    When wandb is enabled, you can add ```--log_training``` to log the training process. There are many other features, and we encourage you to explore the arguments in our `experiments/main.py` file.
 
-4. Visualize the model using the SimPy code saved in the previous step:
+4. Visualize the model using the SymPy code saved in the previous step:
    ```
    python experiments/DLN_viz.py results/Heart/seed_0/sympy_code.py quickstart/example/viz
    ```
