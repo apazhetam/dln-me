@@ -5,6 +5,7 @@ model_params/
 ray_results/
 results/
 wandb/
+quickstart/example
 
 __pycache__/
 **/.ipynb_checkpoints/

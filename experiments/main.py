@@ -486,30 +486,34 @@ def evaluate_model(dataset, seed):
     acc_metrics = evaluate_accuracy(model, test_loader)
 
     # get the simplified model
-    sympy_code_path = f"{results_path}/sympy_code.py"
-    sympy_model = SimplifyLogicNet(
-        model=model,
-        feat_names=tabular_dataset.feat_names,
-        scaler_params=tabular_dataset.scaler_params,
-        dtype_dict=tabular_dataset.dtype_dict,
-    )
-    sympy_code = sympy_model.get_sympy_code()
-    with open(sympy_code_path, "w") as f:
-        f.write(sympy_code)
+    if args.simplify_model:
+        sympy_code_path = f"{results_path}/sympy_code.py"
+        sympy_model = SimplifyLogicNet(
+            model=model,
+            feat_names=tabular_dataset.feat_names,
+            scaler_params=tabular_dataset.scaler_params,
+            dtype_dict=tabular_dataset.dtype_dict,
+        )
+        sympy_code = sympy_model.get_sympy_code()
+        with open(sympy_code_path, "w") as f:
+            f.write(sympy_code)
 
-    sympy_code_path = os.path.join(results_path, "sympy_code.py")
-    graph_path = os.path.join(results_path, "DLN_viz")
+        sympy_code_path = os.path.join(results_path, "sympy_code.py")
+        graph_path = os.path.join(results_path, "DLN_viz")
 
-    comp_metrics = evaluate_computation(
-        model=model,
-        sympy_code_path=sympy_code_path,
-        graph_path=graph_path,
-        bits_for_values=bits_for_values,
-        bits_for_indices=bits_for_indices,
-        simplify_timeout_second=simplify_timeout_second,
-    )
+        comp_metrics = evaluate_computation(
+            model=model,
+            sympy_code_path=sympy_code_path,
+            graph_path=graph_path,
+            bits_for_values=bits_for_values,
+            bits_for_indices=bits_for_indices,
+            simplify_timeout_second=simplify_timeout_second,
+        )
 
-    eval_results.update({**acc_metrics, **comp_metrics})
+        eval_results.update({**acc_metrics, **comp_metrics})
+    else:
+        eval_results.update({**acc_metrics})
+
     return eval_results
 
 

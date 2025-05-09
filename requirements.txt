@@ -1,7 +1,7 @@
 # Install the system-level Graphviz binaries separately
 
-torch==2.5.1
-ray[train,tune]==2.41.0
+torch==2.6.0
+ray[train,tune]==2.45.0
 optuna==3.6.2
 numpy==2.2.0
 pandas==2.2.3
