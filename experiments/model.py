@@ -79,6 +79,8 @@ class DLNConfig:
     num_epochs: int
     device: str
 
+    num_heads: int = 1
+
     num_con_feat: int
     threshold_init: Optional[np.ndarray] = None
     th_slope_init: float = 2  # TODO make it a parameter in HPO?
@@ -181,6 +183,7 @@ class DLN(nn.Module):
                 link_threshold=config.sum_link_threshold,
                 ste_sum_layer=config.ste_sum_layer,
                 tau_out=config.tau_out,
+                num_heads=config.num_heads,
                 **common_args,
             )
 

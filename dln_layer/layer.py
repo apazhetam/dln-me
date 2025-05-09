@@ -567,8 +567,9 @@ class SumLayer(BaseLayer):
         phase_unified: bool = False,
         tau_out: float = 1.0,
         tau_init: float = 1.0,
-        tau_decay: float = 1,
-        tau_min: float = 1,
+        tau_decay: float = 1.0,
+        tau_min: float = 1.0,
+        num_heads: int = 1,
         **kwargs,
     ):
         super().__init__(
@@ -583,57 +584,77 @@ class SumLayer(BaseLayer):
         self.link_threshold = link_threshold
         self.ste = ste_sum_layer
         self.tau_out = tau_out
+        self.num_heads = num_heads
 
         self.init_params()
 
         self.init_phase()
 
     def init_params(self):
-        self.sum_weights = nn.Parameter(
-            nn.init.uniform_(torch.empty(self.in_dim, self.out_dim), a=-0.1, b=0.1)
+        self.sum_weights = nn.ParameterList(
+            [
+                nn.Parameter(
+                    nn.init.uniform_(
+                        torch.empty(self.in_dim, self.out_dim), a=-0.1, b=0.1
+                    )
+                )
+                for _ in range(self.num_heads)
+            ]
         )
-        input_mask = torch.ones(self.in_dim, dtype=torch.bool, device=self.device)
+        input_mask = [
+            torch.ones(self.in_dim, dtype=torch.bool, device=self.device)
+            for _ in range(self.num_heads)
+        ]
         self.register_buffer("input_mask", input_mask)
 
     def forward(self, x):
-        link_soft = torch.sigmoid(self.sum_weights[self.input_mask] / self.tau)
-        link_hard = (link_soft >= self.link_threshold).float()
+        # Compute output for each head independently
+        outputs = []
 
-        if (
-            self.training
-            and not self.freeze
-            and (not self.in_neuron_phase or self.phase_unified)
-        ):
-            if self.ste:
-                link = (link_hard - link_soft).detach() + link_soft
+        for i in range(self.num_heads):
+            link_soft = torch.sigmoid(self.sum_weights[i][self.input_mask[i]] / self.tau)
+            link_hard = (link_soft >= self.link_threshold).float()
+
+            if (
+                self.training
+                and not self.freeze
+                and (not self.in_neuron_phase or self.phase_unified)
+            ):
+                if self.ste:
+                    link = (link_hard - link_soft).detach() + link_soft
+                else:
+                    link = link_soft
             else:
-                link = link_soft
-        else:
-            link = link_hard
+                link = link_hard
 
-        y = torch.matmul(x[..., self.input_mask], link) / self.tau_out
-        return y
+            y = torch.matmul(x[..., self.input_mask[i]], link) / self.tau_out
+            outputs.append(y)
+
+        return torch.cat(outputs, dim=-1)
 
     @torch.no_grad()
     # prune input neurons that does not contribute too much to any output neuron
     def prune_neurons(self, **kwargs):
-        link_soft = torch.sigmoid(self.sum_weights / self.tau)
-        link_hard = (link_soft >= self.link_threshold).float()
-        mask = link_hard.sum(dim=-1) > 0
-        self.input_mask &= mask
+        for i in range(self.num_heads):
+            link_soft = torch.sigmoid(self.sum_weights[i] / self.tau)
+            link_hard = (link_soft >= self.link_threshold).float()
+            mask = link_hard.sum(dim=-1) > 0
+            self.input_mask[i] &= mask
 
-        if self.input_mask.sum().item() == 0:
-            logging.warning(
-                f"\t\t\tall input neurons are pruned. Resetting to all True."
-            )
-            self.input_mask.fill_(1)
+            if self.input_mask[i].sum().item() == 0:
+                logging.warning(
+                    f"\t\t\tall input neurons are pruned for head {i}. Resetting to all True."
+                )
+                self.input_mask[i].fill_(1)
 
-        logging.debug(f"\t\t\ttotal input num_prune: {(~self.input_mask).sum().item()}")
+            logging.debug(f"\t\t\ttotal input num_prune for head {i}: {(~self.input_mask[i]).sum().item()}")
+
         return None
 
     @torch.no_grad()
     def add_input_mask(self, mask):  # mask: True for keep, False for prune
-        self.input_mask &= mask
+        for i in range(self.num_heads):
+            self.input_mask[i] &= mask
 
     @torch.no_grad()
     def update_temperature(self):
@@ -642,23 +663,27 @@ class SumLayer(BaseLayer):
 
     @torch.no_grad()
     def get_num_neurons(self):
-        return self.out_dim
+        return self.out_dim * self.num_heads
 
     @torch.no_grad()
     def get_num_params(self):
-        # for each output neuron, keep a list of input links
-        link_soft = torch.sigmoid(self.sum_weights[self.input_mask] / self.tau)
-        link_hard = (link_soft >= self.link_threshold).float()
-        return 0, int(link_hard.sum().item())
+        total_params = 0
+        for i in range(self.num_heads):
+            # for each output neuron, keep a list of input links
+            link_soft = torch.sigmoid(self.sum_weights[i][self.input_mask[i]] / self.tau)
+            link_hard = (link_soft >= self.link_threshold).float()
+            total_params += int(link_hard.sum().item())
+        return 0, total_params
 
     @torch.no_grad()
     def get_ops_dict(self):
         ops_dict = defaultdict(lambda: defaultdict(int))
-        link_soft = torch.sigmoid(self.sum_weights[self.input_mask] / self.tau)
-        link_hard = (link_soft >= self.link_threshold).float()
-        for i in range(self.out_dim):
-            num_inputs_to_sum = int(link_hard[:, i].sum().item())
-            ops_dict["aggregation"][num_inputs_to_sum] += 1
+        for i in range(self.num_heads):
+            link_soft = torch.sigmoid(self.sum_weights[i][self.input_mask[i]] / self.tau)
+            link_hard = (link_soft >= self.link_threshold).float()
+            for j in range(self.out_dim):
+                num_inputs_to_sum = int(link_hard[:, j].sum().item())
+                ops_dict["aggregation"][num_inputs_to_sum] += 1
         return ops_dict
 
 
