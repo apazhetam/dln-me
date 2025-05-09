@@ -79,8 +79,6 @@ class DLNConfig:
     num_epochs: int
     device: str
 
-    num_heads: int = 1
-
     num_con_feat: int
     threshold_init: Optional[np.ndarray] = None
     th_slope_init: float = 2  # TODO make it a parameter in HPO?
@@ -124,6 +122,7 @@ class DLNConfig:
     prune_threshold: Optional[float] = None
     prune_min_neuron_left: Optional[float] = None
 
+    num_heads: int = 1
 
 class DLN(nn.Module):
     def __init__(self, config: DLNConfig):
