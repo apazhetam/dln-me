@@ -96,6 +96,12 @@ def get_parser():
 
     # Model
     parser.add_argument(
+        "--num_heads",
+        type=int,
+        default=1,
+        help="Number of SumLayer heads (default: 1).",
+    )
+    parser.add_argument(
         "--num_hidden_layers",
         type=int,
         default=3,
@@ -349,14 +355,16 @@ def train_model(args):
     data_config = DataConfig(**(filter_dict_to_dataclass_fields(DataConfig, args_dict)))
     tabular_dataset = TabularDataset(data_config)
 
-    train_loader, val_loader, test_loader = tabular_dataset.get_dataLoader(
-        num_workers, val_split=0.8, split_seed=args.seed
+    train_loader, head_train_loaders, val_loader, test_loader = tabular_dataset.get_dataLoader(
+        num_workers, val_split=0.8, split_seed=args.seed, num_heads=args.num_heads
     )
     train_loader_eval = tabular_dataset.get_dataLoader(
         num_workers, isEval=True, val_split=0.8, split_seed=args.seed
     )[
         0
     ]  # for eval mode evaluation
+
+    print(f'len(head_train_loaders): {len(head_train_loaders)}')
 
     model, criterion, optimizer = get_model(args_dict, tabular_dataset)
 
@@ -366,9 +374,11 @@ def train_model(args):
     metric_functions = {"loss": get_loss, "acc": get_bl_acc}
     modes = [True, False]  # True for train, False for eval
 
+    phase1_epochs = args.num_epochs // 2
+
     best_score = 0
     for cur_epoch in range(1, args.num_epochs + 1):
-        train_epoch(model, train_loader, criterion, optimizer)
+        train_epoch(model, train_loader, head_train_loaders, criterion, optimizer, cur_epoch, phase1_epochs)
 
         if (
             cur_epoch == 1

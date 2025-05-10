@@ -14,7 +14,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.data import TabularDataset
-from dln_layer.layer import ThresholdLayer, LogicLayer, SumLayer
+from dln_layer.layer import ThresholdLayer, LogicLayer, SumLayer, MultiHeadedSumLayer
 from experiments.utils import *
 import logging
 import warnings
@@ -76,6 +76,7 @@ class DLNConfig:
     threshold_dim: int
     output_dim: int
     hidden_dims: List[int]
+    num_heads: int
     num_epochs: int
     device: str
 
@@ -122,7 +123,6 @@ class DLNConfig:
     prune_threshold: Optional[float] = None
     prune_min_neuron_left: Optional[float] = None
 
-    num_heads: int = 1
 
 class DLN(nn.Module):
     def __init__(self, config: DLNConfig):
@@ -175,8 +175,20 @@ class DLN(nn.Module):
                 **common_args,
             )
 
+        print(f"NUM_HEADS: {config.num_heads}")
+
         def create_sum_layer(in_dim, out_dim):
             return SumLayer(
+                in_dim=in_dim,
+                out_dim=out_dim,
+                link_threshold=config.sum_link_threshold,
+                ste_sum_layer=config.ste_sum_layer,
+                tau_out=config.tau_out,
+                **common_args
+            )
+        
+        def create_multiheaded_sum_layer(in_dim, out_dim):
+            return MultiHeadedSumLayer(
                 in_dim=in_dim,
                 out_dim=out_dim,
                 link_threshold=config.sum_link_threshold,
@@ -205,6 +217,13 @@ class DLN(nn.Module):
 
         self.layers.append(
             create_sum_layer(
+                in_dim=config.hidden_dims[-1],
+                out_dim=config.output_dim,
+            )
+        )
+        
+        self.layers.append(
+            create_multiheaded_sum_layer(
                 in_dim=config.hidden_dims[-1],
                 out_dim=config.output_dim,
             )
@@ -255,7 +274,7 @@ class DLN(nn.Module):
             )
             logging.debug(f"prune_schedule: {self.prune_schedule}")
 
-    def forward(self, x):
+    def forward(self, x, using_heads=True, head_idx=None):
         out = x
         for i in range(self.depth):
             layer = self.layers[i]
@@ -271,7 +290,23 @@ class DLN(nn.Module):
                     out = torch.cat(
                         (out, self.bool_constants.expand(x.size(0), -1)), dim=1
                     )
-            out = layer(out)
+
+            if using_heads:
+                if isinstance(layer, SumLayer):
+                    continue
+
+                if isinstance(layer, MultiHeadedSumLayer) and head_idx is not None:
+                    # Train the MultiHeadedSumLayer (specify which head)
+                    out = layer(out, head_idx=head_idx)
+                else:
+                    out = layer(out)
+
+            elif isinstance(layer, MultiHeadedSumLayer):
+                continue
+
+            else:
+                out = layer(out)
+
         return out
 
     @torch.no_grad()
@@ -491,25 +526,56 @@ def is_valid_config(
 # train and eval
 
 
-def train_epoch(model, loader, criterion, optimizer):
+def train_epoch(model, train_loader, head_train_loaders, criterion, optimizer, cur_epoch, phase1_epochs):
     model.train()
     device = next(model.parameters()).device
-    for data in loader:
-        x, y = data[0].to(device), data[1].to(device)
-        optimizer.zero_grad()
-        output = model(x)
-        # in DLN, some epochs may not require grad (e.g., SumLayer before its prog_freeze and when it's in neuron_phase)
-        if output.requires_grad:
-            loss = criterion(output, y)
-            loss.backward()
-            optimizer.step()
 
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE I and II: Train the ThresholdLayer and LogicLayer (use SumLayer)
+    # ──────────────────────────────────────────────────────────────────────
+    if cur_epoch <= phase1_epochs:
+        for data in train_loader:
+            x, y = data[0].to(device), data[1].to(device)
+            optimizer.zero_grad()
+            output = model(x, using_heads=False)
+
+            # in DLN, some epochs may not require grad (e.g., SumLayer before its prog_freeze and when it's in neuron_phase)
+            if output.requires_grad:
+                loss = criterion(output, y)
+                loss.backward()
+                optimizer.step()
+
+    # ───────────────────────────────────────────────────────────────────────
+    # START OF PHASE III: Freeze the ThresholdLayer and LogicLayer parameters
+    # ───────────────────────────────────────────────────────────────────────
+    if cur_epoch == phase1_epochs + 1:
+        for layer in model.layers:
+            if isinstance(layer, (ThresholdLayer, LogicLayer)):
+                layer.freeze_params()
+
+    # ───────────────────────────────────────────────────────────────────────────────────
+    # PHASE III: Train the MultiHeadedSumLayer (ThresholdLayer and LogicLayer are frozen)
+    # ───────────────────────────────────────────────────────────────────────────────────
+    if cur_epoch > phase1_epochs:
+        for head_idx, loader in enumerate(head_train_loaders):
+            for data in loader:
+                x, y = data[0].to(device), data[1].to(device)
+                optimizer.zero_grad()
+                output = model(x, using_heads=True, head_idx=head_idx)
+
+                if output.requires_grad:
+                    loss = criterion(output, y)
+                    loss.backward()
+                    optimizer.step()
+
+    # End of epoch
     if isinstance(model, DLN):
         model.epochs_trained += 1
         model.set_phase()
         model.prune()
         model.freeze_params()
         model.update_temperature()
+
 
 
 @torch.no_grad()

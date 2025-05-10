@@ -8,6 +8,7 @@ from sklearn.model_selection import StratifiedKFold
 from dataclasses import dataclass
 import re
 import warnings
+import random
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -95,7 +96,7 @@ class TabularDataset:
         return X_train_df, y_train, X_test_df, y_test
 
 
-    def get_dataLoader(self, num_workers, isEval=False, val_split=None, split_seed=None):
+    def get_dataLoader(self, num_workers, isEval=False, val_split=None, split_seed=None, num_heads=None):
         # isEval: whether in evaluation mode (no shuffle, no drop_last)
         X_train_df, y_train, X_test_df, y_test = self.get_data()
 
@@ -103,15 +104,37 @@ class TabularDataset:
         if val_split is not None:
             assert split_seed is not None
             df_train, df_val = shuffle_split_data(
-                pd.concat([X_train_df, y_train.to_frame()], axis=1), val_split, seed=split_seed)
+                pd.concat([X_train_df, y_train.to_frame()], axis=1), val_split, seed=split_seed
+            )
             X_train_df, y_train = df_train.drop("Target", axis=1), df_train["Target"]
             X_val_df, y_val = df_val.drop("Target", axis=1), df_val["Target"]
             validation_loader = get_loader(X_val_df, y_val, False, 1024, num_workers)
 
         train_loader = get_loader(X_train_df, y_train, not isEval, self.config.batch_size, num_workers)
         test_loader = get_loader(X_test_df, y_test, False, 1024, num_workers)
-        return train_loader, validation_loader, test_loader
 
+        if num_heads is None:
+            return train_loader, validation_loader, test_loader
+        
+        elif num_heads == 1:
+            head_train_loaders = [get_loader(X_train_df, y_train, not isEval, self.config.batch_size, num_workers)]
+            return train_loader, head_train_loaders, validation_loader, test_loader
+
+        else:
+            # Generate separate bootstrapped loaders for each head
+            head_train_loaders = []
+            data_size = len(X_train_df)
+            indices = list(range(data_size))
+
+            for _ in range(num_heads):
+                # Sample with replacement for each head
+                bootstrap_indices = [random.choice(indices) for _ in range(data_size)]
+                # bootstrap_indices = indices
+
+                loader = get_loader(X_train_df.iloc[bootstrap_indices], y_train.iloc[bootstrap_indices], not isEval, self.config.batch_size, num_workers)
+                head_train_loaders.append(loader)
+
+            return train_loader, head_train_loaders, validation_loader, test_loader
 
     def get_cv_dataLoader(self, cvn, num_workers, train_val_split=0.8):
         X_train_df, y_train, _, _ = self.get_data()
