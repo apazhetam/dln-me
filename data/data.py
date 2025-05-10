@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import os
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, SubsetRandomSampler
 from sklearn.preprocessing import KBinsDiscretizer
 from sklearn.model_selection import StratifiedKFold
 from dataclasses import dataclass
@@ -121,17 +121,41 @@ class TabularDataset:
             return train_loader, head_train_loaders, validation_loader, test_loader
 
         else:
-            # Generate separate bootstrapped loaders for each head
+            # convert once to TensorDataset
+            X_np = X_train_df.to_numpy() if not isinstance(X_train_df, np.ndarray) else X_train_df
+            y_np = y_train.to_numpy()    if not isinstance(y_train, np.ndarray)   else y_train
+
+            train_dataset = TensorDataset(
+                torch.from_numpy(X_np).float(),
+                torch.from_numpy(y_np).long()
+            )
+
+            # main train_loader (still shuffling)
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.config.batch_size,
+                shuffle=not isEval,
+                drop_last=not isEval,
+                num_workers=num_workers,
+            )
+
+            # now build head-specific loaders
             head_train_loaders = []
-            data_size = len(X_train_df)
-            indices = list(range(data_size))
+            rng = np.random.RandomState(split_seed or 0)  # seed for reproducibility
+            n = len(train_dataset)
 
-            for _ in range(num_heads):
-                # Sample with replacement for each head
-                bootstrap_indices = [random.choice(indices) for _ in range(data_size)]
-                # bootstrap_indices = indices
+            for h in range(num_heads):
+                # draw n indices with replacement
+                bootstrap_indices = rng.choice(n, size=n, replace=True)
+                sampler = SubsetRandomSampler(bootstrap_indices)
 
-                loader = get_loader(X_train_df.iloc[bootstrap_indices], y_train.iloc[bootstrap_indices], not isEval, self.config.batch_size, num_workers)
+                loader = DataLoader(
+                    train_dataset,
+                    batch_size=self.config.batch_size,
+                    sampler=sampler,
+                    drop_last=True,       # you probably want drop_last for uniform batches
+                    num_workers=num_workers,
+                )
                 head_train_loaders.append(loader)
 
             return train_loader, head_train_loaders, validation_loader, test_loader
