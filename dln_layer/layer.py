@@ -790,17 +790,23 @@ class MultiHeadedSumLayer(BaseLayer):
                 else:
                     link = link_hard
 
-                # Shape of y is [batch_size, num_output_classes] e.g. torch.Size([64, 2])
-                y = torch.matmul(x[..., input_mask], link) / self.tau_out
-                outputs.append(y)
+                # Shape of y_i is [batch_size, num_output_classes] e.g. torch.Size([64, 2])
+                y_i = torch.matmul(x[..., input_mask], link) / self.tau_out
+                outputs.append(y_i)
 
-            # Shape of result = [num_heads, batch_size, num_output_classes] e.g. torch.Size([3, 64, 2])
-            result = torch.stack(outputs, dim=0)
+            # Shape of stacked = [num_heads, batch_size, num_output_classes] e.g. torch.Size([3, 64, 2])
+            stacked = torch.stack(outputs, dim=0)
 
-            # Aggregate by averaging across heads
-            # Shape of result = [batch_size, num_output_classes] e.g. torch.Size([64, 2])
-            result = result.mean(dim=0)
-            return result
+            # 1) per‐head predicted class: [num_heads, batch_size]
+            preds = stacked.argmax(dim=-1)
+
+            # 2) majority vote across heads: [batch_size]
+            votes, _ = torch.mode(preds, dim=0)
+
+            # Aggregate by majority voting
+            # 3) turn those votes back into a one-hot “score” tensor:
+            #    shape [batch_size, num_output_classes], 1.0 at the voted class, 0 elsewhere
+            return F.one_hot(votes, num_classes=stacked.size(2)).float()
 
     @torch.no_grad()
     # prune input neurons that does not contribute too much to any output neuron
